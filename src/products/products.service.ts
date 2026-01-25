@@ -122,7 +122,7 @@ export class ProductsService {
     
     if (!issueKey) {
       this.logger.error(`[WEBHOOK] Received payload without Issue Key`);
-      return { received: false };
+      return { received: true };
     }
   
     // 2. Find Product
