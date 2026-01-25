@@ -1,206 +1,128 @@
-import { BadGatewayException, Injectable, Logger, NotFoundException, UnauthorizedException } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
-import axios from 'axios';
-import { CreateJiraDto } from './dto/create-jira.dto';
-
-require('dotenv').config();
+import { Injectable, Logger } from '@nestjs/common';
+import { HttpService } from '@nestjs/axios';
+import { firstValueFrom } from 'rxjs';
 
 @Injectable()
 export class JiraService {
   private readonly logger = new Logger(JiraService.name);
 
-  async createIssue(params: {
-    summary: string;
-    description: string;
-    productId: string;
-  }): Promise<{
-    jiraKey: string;
-    jiraId: string;
-  }> {
-    const baseUrl = process.env.DOMAIN;
-
-    const auth = {
-      username: process.env.ATLASSIAN_USERNAME!,
-      password: process.env.ATLASSIAN_API_KEY!,
+  constructor(private readonly httpService: HttpService) {
+    const email = process.env.JIRA_EMAIL;
+    const token = process.env.JIRA_API_TOKEN;
+    
+    if (!email || !token) {
+      throw new Error('JIRA_EMAIL and JIRA_API_TOKEN must be configured');
+    }
+    
+    this.httpService.axiosRef.defaults.baseURL = process.env.JIRA_BASE_URL;
+    this.httpService.axiosRef.defaults.auth = {
+      username: email as string,
+      password: token as string,
     };
+  }
 
-    const data = {
-      fields: {
-        project: {
-          key: process.env.PROJECT_KEY,
-        },
-        issuetype: {
-          name: 'Task',
-        },
-        summary: params.summary,
-        description: {
-          type: 'doc',
-          version: 1,
-          content: [
-            {
-              type: 'paragraph',
-              content: [
-                {
-                  type: 'text',
-                  text: `${params.description}\n\nProduct ID: ${params.productId}`,
-                },
-              ],
-            },
-          ],
-        },
-      },
-    };
-
+  // --- 1. Create Issue (REST API v2) ---
+  async createIssue(dto: { summary: string; description?: string; productId?: number }) {
     try {
-      const response = await axios.post(
-        `${baseUrl}/rest/api/3/issue`,
-        data,
-        {
-          headers: {
-            'Content-Type': 'application/json',
-            Accept: 'application/json',
-          },
-          auth,
+      const description = dto.description 
+        ? `${dto.description}\n\nProduct ID: ${dto.productId || 'N/A'}`
+        : `Product ID: ${dto.productId || 'N/A'}`;
+
+      const payload = {
+        fields: {
+          project: { key: process.env.JIRA_PROJECT_KEY },
+          issuetype: { name: process.env.JIRA_ISSUE_TYPE || 'Task' },
+          summary: dto.summary,
+          description: description,
         },
-      );
-
-      return {
-        jiraKey: response.data.key,
-        jiraId: response.data.id,
       };
-    } catch (error) {
-      console.error('Jira API error:', error.response?.data || error.message);
 
-      throw new BadGatewayException(
-        error.response?.data?.errorMessages?.[0] ||
-        'Failed to create Jira issue',
+      this.logger.log(`[OUTBOUND] Creating Jira issue: ${dto.summary}`);
+      
+      const { data } = await firstValueFrom(
+        this.httpService.post('/rest/api/2/issue', payload)
       );
+
+      this.logger.log(`[OUTBOUND] Jira issue created: ${data.key} (ID: ${data.id})`);
+      return { jiraKey: data.key, jiraId: data.id };
+    } catch (error) {
+      this.logger.error(`[OUTBOUND] Create Issue Failed: ${this.getErrorMessage(error)}`);
+      throw error;
     }
   }
 
-
-  async updateIssue(params: CreateJiraDto): Promise<number> {
-    const { issueKey, summary, description } = params;
-    const auth = {
-      username: process.env.ATLASSIAN_USERNAME!,
-      password: process.env.ATLASSIAN_API_KEY!,
-    };
-
+  // --- 2. Update Issue ---
+  async updateIssue(dto: { issueKey: string; summary?: string; description?: string }) {
     try {
-      const baseUrl = process.env.DOMAIN;
       const fields: any = {};
+      if (dto.summary) fields.summary = dto.summary;
+      if (dto.description) fields.description = dto.description;
 
-      if (summary) fields.summary = summary;
-      if (description)
-        fields.description = {
-          type: 'doc',
-          version: 1,
-          content: [
-            {
-              type: 'paragraph',
-              content: [{ type: 'text', text: description }],
-            },
-          ],
-        };
-
-      const response = await axios.put(
-        `${baseUrl}/rest/api/3/issue/${issueKey}`,
-        { fields },
-        {
-          auth,
-          headers: { 'Content-Type': 'application/json' },
-        },
+      this.logger.log(`[OUTBOUND] Updating Jira issue ${dto.issueKey}`);
+      
+      await firstValueFrom(
+        this.httpService.put(`/rest/api/2/issue/${dto.issueKey}`, { fields })
       );
 
-      this.logger.log(`Jira issue ${issueKey} updated successfully`);
-      return response.status;
-
+      this.logger.log(`[OUTBOUND] Jira issue ${dto.issueKey} updated successfully`);
     } catch (error) {
-      this.logger.error(
-        `Failed to update Jira issue ${issueKey}`,
-        error.response?.data || error.message,
-      );
-      throw new BadGatewayException('Failed to update Jira issue');
+      this.logger.error(`[OUTBOUND] Update Issue Failed: ${this.getErrorMessage(error)}`);
+      throw error;
     }
   }
 
-  async getIssue(issueKey: string): Promise<any> {
-
+  // --- 3. Get Issue (for live status) ---
+  async getIssue(issueKey: string) {
     try {
-      const baseUrl = process.env.DOMAIN;
-      const auth = {
-        username: process.env.ATLASSIAN_USERNAME!,
-        password: process.env.ATLASSIAN_API_KEY!,
-      };
+      this.logger.log(`[OUTBOUND] Fetching Jira issue ${issueKey}`);
+      
+      const { data } = await firstValueFrom(
+        this.httpService.get(`/rest/api/2/issue/${issueKey}?fields=status,summary,description,updated,assignee`)
+      );
 
-      const config = {
-        method: 'get',
-        url: baseUrl + '/rest/api/3/issue/' + issueKey,
-        headers: { 'Content-Type': 'application/json' },
-        auth: auth
+      this.logger.log(`[OUTBOUND] Jira issue ${issueKey} fetched: ${data.fields.status.name}`);
+      
+      return {
+        key: data.key,
+        status: data.fields.status.name,
+        summary: data.fields.summary,
+        description: data.fields.description,
+        updated: data.fields.updated,
+        assignee: data.fields.assignee?.displayName || null,
       };
-      const response = await axios.request(config);
-
-      return response.data;
     } catch (error) {
-      console.log('error: ')
-      console.log(error.response.data.errorMessages[0])
+      this.logger.error(`[OUTBOUND] Get Issue Failed: ${this.getErrorMessage(error)}`);
+      throw error;
+    }
+  }
 
-      const status = error?.response?.status;
-      const jiraMsg =
-        error?.response?.data?.errorMessages?.join(', ') ||
-        error.message ||
-        'Jira request failed';
-
-      if (status === 404) {
-        throw new NotFoundException(`Jira issue not found: ${jiraMsg}`);
+  // --- 4. Transition to "Dropped" ---
+  async updateStatus(issueKey: string) {
+    try {
+      const transitionId = process.env.JIRA_DROPPED_TRANSITION_ID;
+      if (!transitionId) {
+        throw new Error('JIRA_DROPPED_TRANSITION_ID not configured');
       }
 
-      if (status === 401 || status === 403) {
-        throw new UnauthorizedException('Jira authentication/permission failed');
-      }
-
-      throw new BadGatewayException(`Jira error: ${jiraMsg}`);
-
-    }
-  }
-
-  async updateStatus(issueKey: string, statusID: string): Promise<number> {
-    const baseUrl = process.env.DOMAIN;
-    const auth = {
-      username: process.env.ATLASSIAN_USERNAME!,
-      password: process.env.ATLASSIAN_API_KEY!,
-    };
-
-    try {
-
-      const config = {
-        headers: { 'Content-Type': 'application/json' },
-        auth: auth
-      };
-
-      //Body to pass into POST REST API Request
-      // status Id => 3 = dropped, 11 = To Do, 21 = In Progress, 31 = In Review , 41 = Done
-      const data = {
-        transition: {
-          id: statusID
-        }
-      };
-
-      const response = await axios.post(`${baseUrl}` + `/rest/api/2/issue/` + issueKey +
-        `/transitions`, data, config);
-
-      //if you see that you get status of 204, that means the update worked
-      console.log(response.status)
-      return response.status;
-    } catch (error) {
-      console.error(
-        'Jira transition failed',
-        error?.response?.data || error.message,
+      this.logger.log(`[OUTBOUND] Transitioning ${issueKey} to Dropped (transition ID: ${transitionId})`);
+      
+      await firstValueFrom(
+        this.httpService.post(`/rest/api/2/issue/${issueKey}/transitions`, {
+          transition: { id: transitionId },
+        })
       );
-      throw new BadGatewayException(error.response.data.errorMessages[0]);
+
+      this.logger.log(`[OUTBOUND] Jira issue ${issueKey} transitioned to Dropped`);
+    } catch (error) {
+      this.logger.error(`[OUTBOUND] Transition Failed: ${this.getErrorMessage(error)}`);
+      throw error;
     }
   }
 
+  // --- Helper: Extract Error Message ---
+  private getErrorMessage(error: any): string {
+    return error.response?.data?.errorMessages?.[0] 
+      || JSON.stringify(error.response?.data?.errors) 
+      || error.message;
+  }
 }

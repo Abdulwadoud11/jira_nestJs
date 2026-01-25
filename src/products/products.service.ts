@@ -1,202 +1,241 @@
 // src/products/products.service.ts
-import { BadGatewayException, BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { Product } from './product.entity';
+import { Product } from './entities/product.entity';
 import { JiraService } from '../jira/jira.service';
+import { CreateProductDto } from './dto/create-product.dto';
+import { UpdateProductDto } from './dto/update-product.dto';
 
 @Injectable()
 export class ProductsService {
   private readonly logger = new Logger(ProductsService.name);
 
   constructor(
-    @InjectRepository(Product)
-    private readonly productRepo: Repository<Product>,
-    private readonly jiraService: JiraService,
+    @InjectRepository(Product) private repo: Repository<Product>,
+    private jira: JiraService
   ) { }
 
-  async createProduct(
-    name: string,
-    description: string,
-  ): Promise<Product> {
-    // create product in db
-    const product = this.productRepo.create({
-      name,
-      description,
-    });
-
-    const savedProduct = await this.productRepo.save(product);
+  // 1. Create Product -> Create Jira Ticket
+  async createProduct(name: string, description?: string, externalRef?: string) {
+    const product = await this.repo.save({ name, description, externalRef, jiraSyncStatus: 'PENDING' });
 
     try {
-      const jiraTicket = await this.jiraService.createIssue({
-        summary: name,
-        description,
-        productId: savedProduct.id,
+      const jiraResult = await this.jira.createIssue({
+        summary: product.name,
+        description: product.description,
+        productId: product.id
       });
 
-      savedProduct.jiraIssueKey = jiraTicket.jiraKey;
-      savedProduct.jiraIssueId = jiraTicket.jiraId;
-      savedProduct.ticketStatus = "TO DO";
-      savedProduct.jiraSyncStatus = 'OK';
-      savedProduct.jiraLastSyncAt = new Date();
+      Object.assign(product, {
+        jiraIssueKey: jiraResult.jiraKey,
+        jiraIssueId: jiraResult.jiraId,
+        jiraSyncStatus: 'OK',
+        jiraLastSyncAt: new Date(),
+      });
 
-      await this.productRepo.save(savedProduct);
-    } catch (error) {
-      this.logger.error('Jira sync failed', error);
-      // if jira issue creation failed we save the product in db with jiraSyncStatus "FAILED"
-      savedProduct.jiraSyncStatus = 'FAILED';
-      savedProduct.jiraLastSyncAt = new Date();
-      await this.productRepo.save(savedProduct);
+      const savedProduct = await this.repo.save(product);
+      return this.filterProductResponse(savedProduct);
+    } catch (e) {
+      this.logger.error(`Failed to create Jira issue for product ${product.id}: ${e.message}`);
+      Object.assign(product, { jiraSyncStatus: 'FAILED' });
+      const savedProduct = await this.repo.save(product);
+      return this.filterProductResponse(savedProduct);
     }
-
-    return savedProduct;
   }
 
-  async update(
-    id: string,
-    dataToUpdate,
-  ): Promise<Product> {
+  // 2. Update Product -> Update Jira Ticket
+  async update(id: number, dto: UpdateProductDto) {
+    const product = await this.repo.findOneBy({ id });
+    if (!product) throw new NotFoundException(`Product ${id} not found`);
 
-    const product = await this.productRepo.findOne({ where: { id } });
-    if (!product) throw new NotFoundException('Product not found');
+    // Update product fields using Object.assign
+    Object.assign(product, dto);
+    await this.repo.save(product);
 
-
-    let updatedProduct;
-    // Update Jira if linked
+    // Sync to Jira
     if (product.jiraIssueKey) {
-
-      // Update local fields
-      Object.assign(product, dataToUpdate);
-      updatedProduct = await this.productRepo.save(product);
-
       try {
-        await this.jiraService.updateIssue({
+        await this.jira.updateIssue({
           issueKey: product.jiraIssueKey,
           summary: product.name,
-          description: product.description || '',
+          description: product.description
         });
-
-        product.jiraSyncStatus = 'OK';
-        product.jiraLastSyncAt = new Date();
-        await this.productRepo.save(product);
-
-      } catch (err) {
-        product.jiraSyncStatus = 'FAILED';
-        product.jiraLastSyncAt = new Date();
-        await this.productRepo.save(product);
-
-        throw new BadGatewayException(err.response)
+        Object.assign(product, {
+          jiraSyncStatus: 'OK',
+          jiraLastSyncAt: new Date()
+        });
+        await this.repo.save(product);
+      } catch (e) {
+        this.logger.error(`Failed to update Jira issue ${product.jiraIssueKey}: ${e.message}`);
+        Object.assign(product, { jiraSyncStatus: 'FAILED' });
+        await this.repo.save(product);
       }
     } else {
-      throw new BadRequestException(`Product ${id} has no linked Jira issue.`);
-
+      // Create Jira issue if missing
+      try {
+        const jiraResult = await this.jira.createIssue({
+          summary: product.name,
+          description: product.description,
+          productId: product.id
+        });
+        Object.assign(product, {
+          jiraIssueKey: jiraResult.jiraKey,
+          jiraIssueId: jiraResult.jiraId,
+          jiraSyncStatus: 'OK',
+          jiraLastSyncAt: new Date(),
+        });
+        await this.repo.save(product);
+      } catch (e) {
+        this.logger.error(`Failed to create Jira issue for product ${product.id}: ${e.message}`);
+        Object.assign(product, { jiraSyncStatus: 'FAILED' });
+        await this.repo.save(product);
+      }
     }
 
-    return updatedProduct;
+    return this.filterProductResponse(product);
   }
 
-  async handleJiraWebhook(payload) {
-    const fields = payload;
-    console.log(fields);
+  // 3. Get Product + Current State
+  async findProduct(id: number) {
+    const product = await this.repo.findOneBy({ id });
+    if (!product) throw new NotFoundException(`Product ${id} not found`);
 
-    const updateData: Partial<Product> = {};
-    if (fields.summary) updateData.name = fields.summary;
-    if (fields.description) updateData.description = fields.description;
-    if (fields.status) updateData.ticketStatus = fields.status;
-    updateData.jiraLastSyncAt = new Date()
-    updateData.jiraSyncStatus = "OK"
+    if (!product.jiraIssueKey) {
+      return this.filterProductWithTicket(product, null, 'NO_KEY');
+    }
 
-    const product = await this.updateByJiraKey(fields.issueKey, updateData);
+    try {
+      const jiraData = await this.jira.getIssue(product.jiraIssueKey);
+      return this.filterProductWithTicket(product, jiraData);
+    } catch (e) {
+      this.logger.error(`Failed to fetch Jira issue ${product.jiraIssueKey}: ${e.message}`);
+      return this.filterProductWithTicket(product, null, 'FAILED', e.message);
+    }
+  }
 
-    console.log(`product ${product.id} updated successfully`);
+  async handleJiraWebhook(payload: any) {
+    // 1. Traceability: Basic ID and Event discovery
+    const issue = payload.issue || payload; // Support both nested and flat payloads
+    const issueKey = issue?.key;
+    const fields = issue?.fields || {};
+    
+    if (!issueKey) {
+      this.logger.error(`[WEBHOOK] Received payload without Issue Key`);
+      return { received: false };
+    }
+  
+    // 2. Find Product
+    const product = await this.repo.findOneBy({ jiraIssueKey: issueKey });
+    if (!product) {
+      this.logger.warn(`[WEBHOOK]  Issue: ${issueKey} | Error: Product not found`);
+      return { received: true }; 
+    }
+  
+    // 3. Mapping Updates (Minimal & Traceable)
+    const updates: Partial<Product> = {};
+    const changelog: string[] = [];
+  
+    // Sync Name/Summary
+    if (fields.summary && fields.summary !== product.name) {
+      changelog.push(`Name: ${product.name} -> ${fields.summary}`);
+      updates.name = fields.summary;
+    }
+  
+    // Sync Status
+    const newStatus = fields.status?.name;
+    if (newStatus && newStatus !== product.ticketStatus) {
+      changelog.push(`Status: ${product.ticketStatus || 'N/A'} -> ${newStatus}`);
+      updates.ticketStatus = newStatus;
+    }
+  
+    // Sync Description (v2 supports string directly)
+    if (fields.description && fields.description !== product.description) {
+      changelog.push(`Description updated (${fields.description.length} chars)`);
+      updates.description = fields.description;
+    }
+  
+    // 4. Traceability Logging & Save
+    if (changelog.length > 0) {
+      Object.assign(product, updates);
+      product.jiraLastSyncAt = new Date();
+      product.jiraSyncStatus = 'OK';
+      
+      await this.repo.save(product);
+
+      this.logger.log(`[WEBHOOK]  Issue: ${issueKey} | Product ID: ${product.id}`);
+    } else {
+      this.logger.log(`[WEBHOOK]  Issue: ${issueKey} | No changes detected.`);
+    }
+  
+    return { received: true };
+  }
+
+  // 5. Soft Delete -> Move Jira to "Dropped"
+  async remove(id: number) {
+    const product = await this.repo.findOneBy({ id });
+    if (!product) throw new NotFoundException(`Product ${id} not found`);
+
+    // Transition Jira issue to "Dropped"
+    if (product.jiraIssueKey) {
+      try {
+        await this.jira.updateStatus(product.jiraIssueKey);
+        Object.assign(product, {
+          jiraSyncStatus: 'OK',
+          jiraLastSyncAt: new Date()
+        });
+        await this.repo.save(product);
+      } catch (e) {
+        this.logger.error(`Failed to transition Jira issue ${product.jiraIssueKey} to Dropped: ${e.message}`);
+        Object.assign(product, { jiraSyncStatus: 'FAILED' });
+        await this.repo.save(product);
+        // Continue with soft delete even if Jira transition fails
+      }
+    }
+
+    // Soft delete using TypeORM's softDelete
+    await this.repo.softDelete(id);
 
     return {
-      status: 'success',
-      productId: product.id,
+      id,
+      deleted: true,
+      deletedAt: new Date(),
+      jiraTransitioned: product.jiraIssueKey ? true : false,
+      jiraSyncStatus: product.jiraSyncStatus,
     };
   }
 
-
-  async updateByJiraKey(jiraKey: string, updateData: Partial<Product>) {
-    const product = await this.productRepo.findOne({ where: { jiraIssueKey: jiraKey } });
-    if (!product) {
-      throw new NotFoundException(`No product found for Jira issue ${jiraKey}`);
-    }
-
-    Object.assign(product, updateData);
-    return this.productRepo.save(product);
-  }
-
-
-  /**
-   * Get product
-   */
-
-  async findProduct(id: string): Promise<any> {
-    const product = await this.productRepo.findOneBy({ id });
-    if (!product) {
-      throw new NotFoundException(`Product ${id} not found`)
-    }
-
-    let issueObj: {
-      key: string;
-      status: string;
-      summary: string;
-    } | null = null;
-
-    let jiraError;
-
-    if (!product.jiraIssueKey) {
-      return {
-        product,
-        error: 'No Jira issue linked to product',
-      };
-    }
-
-    const issue = await this.jiraService.getIssue(product.jiraIssueKey);
-
-    issueObj = {
-      key: issue.key,
-      status: issue.fields.status.statusCategory.name,
-      summary: issue.fields.summary,
+  // ---  for Create/Update---
+  private filterProductResponse(product: Product) {
+    return {
+      id: product.id,
+      name: product.name,
+      description: product.description,
+      externalRef: product.externalRef,
+      jiraIssueKey: product.jiraIssueKey,
+      jiraIssueId: product.jiraIssueId,
     };
-    jiraError = 'Failed to fetch Issue from Jira ';
-
-
-    return { product, issueObj, jiraError };
-
   }
 
+   // ---  for get---
+  private filterProductWithTicket(product: Product, ticket: any, jiraFetchStatus?: string, jiraFetchError?: string) {
+    const base = {
+      id: product.id,
+      name: product.name,
+      description: product.description,
+      externalRef: product.externalRef,
+      ticket: ticket ? {
+        key: ticket.key,
+        status: ticket.status,
+        updated: ticket.updated,
+        summary: ticket.summary,
+      } : null,
+    };
 
-  /**
-   * Soft-delete a product
-   */
-  async remove(id: string): Promise<any> {
-    const product = await this.productRepo.findOneBy({ id })
-    if (!product) {
-      throw new NotFoundException(`Product ${id} not found`)
+    if (jiraFetchStatus) {
+      return { ...base, jiraFetchStatus, ...(jiraFetchError && { jiraFetchError }) };
     }
-    if (!product.jiraIssueKey) {
-      throw new BadRequestException("No Jira issue linked to product")
-    }
 
-
-    // status Id => 3 = dropped, 11 = To Do, 21 = In Progress, 31 = In Review , 41 = Done
-    // will throw err if failed
-    await this.jiraService.updateStatus(product.jiraIssueKey, "3");
-
-    //Soft Delete => deletedAt = new Date()
-    await this.productRepo.softDelete(id);
-
-
-    product.jiraLastSyncAt = new Date()
-    product.jiraSyncStatus = "OK"
-
-    await this.productRepo.save(product)
-
-    return { msg: `product deleted succesfuly` }
-
-
+    return base;
   }
-
 }

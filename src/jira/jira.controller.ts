@@ -10,43 +10,17 @@ export class JiraController {
     private readonly jiraService: JiraService,
     private readonly productsService: ProductsService
   ) { }
-
   @Post('webhook')
-  async handleWebhook(@Body() data) {
-    return this.productsService.handleJiraWebhook(data);
-  }
+async handleWebhook(@Body() data: any) {
+  // 1. Simple Extraction
+  const issueKey = data.issue?.key;              // "PROJ-66"
+  const issueName = data.issue?.fields?.summary;  // "my Product 1"
+  const issueStatus = data.issue?.fields?.status?.name;
 
+  // 2. Simple Traceability Logs
+  console.log(`[Jira Webhook] Key: ${issueKey} | Name: ${issueName} | Status: ${issueStatus}`);
 
+  // 3. Pass to Service
+  return this.productsService.handleJiraWebhook(data);
 }
-
-
-
-// @Controller('jira')
-// export class JiraController {
-//   constructor(private readonly jiraService: JiraService) {}
-
-//   @Post()
-//   create(@Body() createJiraDto: CreateJiraDto) {
-//     return this.jiraService.create(createJiraDto);
-//   }
-
-//   @Get()
-//   findAll() {
-//     return this.jiraService.findAll();
-//   }
-
-//   @Get(':id')
-//   findOne(@Param('id') id: string) {
-//     return this.jiraService.findOne(+id);
-//   }
-
-//   @Patch(':id')
-//   update(@Param('id') id: string, @Body() updateJiraDto: UpdateJiraDto) {
-//     return this.jiraService.update(+id, updateJiraDto);
-//   }
-
-//   @Delete(':id')
-//   remove(@Param('id') id: string) {
-//     return this.jiraService.remove(+id);
-//   }
-// }
+}

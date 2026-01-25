@@ -1,0 +1,252 @@
+{
+	"info": {
+		"_postman_id": "jira-nestjs-collection",
+		"name": "Jira NestJS POC API",
+		"description": "Postman collection for testing bidirectional Jira-NestJS integration POC",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"item": [
+		{
+			"name": "Products",
+			"item": [
+				{
+					"name": "Create Product",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"name\": \"Sample Product\",\n  \"description\": \"This is a sample product description\",\n  \"externalRef\": \"EXT-001\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{baseUrl}}/products",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"products"
+							]
+						},
+						"description": "Create a new product. This will:\n1. Create product in MySQL\n2. Create corresponding Jira issue\n3. Store jiraIssueKey and jiraIssueId\n\nIf Jira creation fails, product is still created with jiraSyncStatus=FAILED"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Product by ID",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/products/:id",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"products",
+								":id"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "1",
+									"description": "Product ID"
+								}
+							]
+						},
+						"description": "Get a product by ID with live Jira ticket status.\n\nResponse includes:\n- Product data from MySQL\n- ticket: { key, status, summary, updated, assignee }\n- jiraFetchStatus if Jira unavailable"
+					},
+					"response": []
+				},
+				{
+					"name": "Update Product",
+					"request": {
+						"method": "PATCH",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"name\": \"Updated Product Name\",\n  \"description\": \"Updated product description\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{baseUrl}}/products/:id",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"products",
+								":id"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "1",
+									"description": "Product ID"
+								}
+							]
+						},
+						"description": "Update a product by ID. Updates MySQL and syncs to Jira.\n\n- If product has jiraIssueKey: updates Jira issue\n- If product has no jiraIssueKey: creates new Jira issue\n- Partial updates supported (name, description, externalRef)"
+					},
+					"response": []
+				},
+				{
+					"name": "Soft Delete Product",
+					"request": {
+						"method": "DELETE",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/products/:id",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"products",
+								":id"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "1",
+									"description": "Product ID"
+								}
+							]
+						},
+						"description": "Soft delete a product and transition linked Jira issue to 'Dropped' status.\n\n- Sets deletedAt timestamp in MySQL\n- Transitions Jira issue to configured 'Dropped' status\n- Continues with soft delete even if Jira transition fails"
+					},
+					"response": []
+				}
+			],
+			"description": "Product endpoints for bidirectional Jira integration"
+		},
+		{
+			"name": "Jira Webhook",
+			"item": [
+				{
+					"name": "Jira Issue Updated Webhook",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"webhookEvent\": \"jira:issue_updated\",\n  \"issue\": {\n    \"id\": \"10000\",\n    \"self\": \"https://your-domain.atlassian.net/rest/api/2/issue/10000\",\n    \"key\": \"PROJ-1\",\n    \"fields\": {\n      \"summary\": \"Updated Issue Summary\",\n      \"description\": \"Updated issue description from Jira\",\n      \"status\": {\n        \"name\": \"In Progress\"\n      }\n    }\n  },\n  \"timestamp\": 1640000000000\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{baseUrl}}/jira/webhook",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"jira",
+								"webhook"
+							]
+						},
+						"description": "Inbound webhook endpoint for Jira Automation.\n\nConfigure in Jira Automation:\n- Trigger: Issue Updated / Transitioned\n- Action: Send Web Request → POST {BACKEND_URL}/jira/webhook\n\nUpdates product fields based on Jira issue key:\n- ticketStatus ← status.name\n- name ← summary (optional)\n- description ← description (optional)\n\nFull payload is logged for traceability."
+					},
+					"response": []
+				},
+				{
+					"name": "Jira Issue Transitioned Webhook",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"webhookEvent\": \"jira:issue_updated\",\n  \"issue\": {\n    \"id\": \"10000\",\n    \"self\": \"https://your-domain.atlassian.net/rest/api/2/issue/10000\",\n    \"key\": \"PROJ-1\",\n    \"fields\": {\n      \"summary\": \"Test Issue\",\n      \"description\": \"This is a test issue\",\n      \"status\": {\n        \"name\": \"Done\"\n      }\n    }\n  },\n  \"changelog\": {\n    \"items\": [\n      {\n        \"field\": \"status\",\n        \"fromString\": \"In Progress\",\n        \"toString\": \"Done\"\n      }\n    ]\n  },\n  \"timestamp\": 1640000000000\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{baseUrl}}/jira/webhook",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"jira",
+								"webhook"
+							]
+						},
+						"description": "Example webhook payload for issue status transition.\n\nUse this format when configuring Jira Automation to trigger on status changes."
+					},
+					"response": []
+				}
+			],
+			"description": "Jira webhook endpoints for inbound updates"
+		}
+	],
+	"event": [
+		{
+			"listen": "prerequest",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					""
+				]
+			}
+		},
+		{
+			"listen": "test",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					""
+				]
+			}
+		}
+	],
+	"variable": [
+		{
+			"key": "baseUrl",
+			"value": "http://localhost:3000",
+			"type": "string",
+			"description": "Base URL for the NestJS API"
+		},
+		{
+			"key": "productId",
+			"value": "",
+			"type": "string",
+			"description": "Product ID from Create Product response (auto-set)"
+		},
+		{
+			"key": "jiraIssueKey",
+			"value": "",
+			"type": "string",
+			"description": "Jira issue key from Create Product response (auto-set)"
+		}
+	]
+}
