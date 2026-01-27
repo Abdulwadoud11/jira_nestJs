@@ -59,7 +59,10 @@ export class ProductsService {
 
   // 3. Get Product + Current State
   async findProduct(id: number) {
-    const product = await this.repo.findOneBy({ id });
+    const product = await this.repo.findOne({ 
+      where: { id },
+      withDeleted: false 
+    });
     if (!product) throw new NotFoundException(`Product ${id} not found`);
 
     if (!product.jiraIssueKey) {
@@ -88,7 +91,10 @@ export class ProductsService {
     }
 
     // 2. Find Product
-    let product = await this.repo.findOneBy({ jiraIssueKey: issueKey });
+    let product = await this.repo.findOne({ 
+      where: { jiraIssueKey: issueKey },
+      withDeleted: false 
+    });
     
     // 2a. If product doesn't exist, create it from Jira issue data
     if (!product) {

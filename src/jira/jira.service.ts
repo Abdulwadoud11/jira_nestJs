@@ -121,14 +121,12 @@ export class JiraService {
       throw error;
     }
   }
-
-  // --- 4. Transition to "Dropped" ---
   // --- 4. Transition to "Dropped" ---
   async updateStatus(issueKey: string) {
     try {
       const transitionId = process.env.JIRA_DROPPED_TRANSITION_ID;
       const statusName = process.env.JIRA_DROPPED_STATUS_NAME;
-      
+
       if (!transitionId && !statusName) {
         throw new Error('JIRA_DROPPED_TRANSITION_ID or JIRA_DROPPED_STATUS_NAME must be configured');
       }
@@ -143,12 +141,13 @@ export class JiraService {
 
       if (transitionId) {
         // Verify the transition ID is available for this issue
+        // Convert both to string for comparison (env vars are strings, Jira may return numbers)
         targetTransition = transitionsData.transitions.find(
-          (t: any) => t.id === transitionId
+          (t: any) => String(t.id) === String(transitionId)
         );
-        
+
         if (!targetTransition) {
-          const availableTransitions = transitionsData.transitions.map((t: any) => 
+          const availableTransitions = transitionsData.transitions.map((t: any) =>
             `ID: ${t.id}, Name: ${t.name}, To: ${t.to?.name || 'N/A'}`
           ).join('; ');
           throw new Error(
@@ -156,18 +155,18 @@ export class JiraService {
             `Current status may not allow this transition. Available transitions: ${availableTransitions}`
           );
         }
-        
+
         this.logger.log(`Transitioning ${issueKey} to Dropped (transition ID: ${transitionId}, name: ${targetTransition.name})`);
       } else {
         // Find transition by status name
         this.logger.log(`Finding transition to status: ${statusName}`);
-        
+
         targetTransition = transitionsData.transitions.find(
           (t: any) => t.to?.name === statusName || t.name === statusName
         );
-        
+
         if (!targetTransition) {
-          const availableTransitions = transitionsData.transitions.map((t: any) => 
+          const availableTransitions = transitionsData.transitions.map((t: any) =>
             `ID: ${t.id}, Name: ${t.name}, To: ${t.to?.name || 'N/A'}`
           ).join('; ');
           throw new Error(
@@ -175,7 +174,7 @@ export class JiraService {
             `Available transitions: ${availableTransitions}`
           );
         }
-        
+
         this.logger.log(`Transitioning ${issueKey} to Dropped (transition ID: ${targetTransition.id}, name: ${targetTransition.name})`);
       }
 
@@ -188,17 +187,17 @@ export class JiraService {
       // Some transitions may require a resolution field
       if (targetTransition.fields) {
         const requiredFields: any = {};
-        
+
         // Check if resolution is required
         if (targetTransition.fields.resolution && targetTransition.fields.resolution.required) {
           // Try to find a "Dropped" or "Cancelled" resolution, or use the first available
           const resolutions = targetTransition.fields.resolution.allowedValues || [];
-          const droppedResolution = resolutions.find((r: any) => 
-            r.name?.toLowerCase().includes('drop') || 
+          const droppedResolution = resolutions.find((r: any) =>
+            r.name?.toLowerCase().includes('drop') ||
             r.name?.toLowerCase().includes('cancel') ||
             r.name?.toLowerCase().includes('close')
           ) || resolutions[0];
-          
+
           if (droppedResolution) {
             requiredFields.resolution = { id: droppedResolution.id };
             this.logger.log(`Adding required resolution: ${droppedResolution.name}`);
