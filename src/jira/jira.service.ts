@@ -123,24 +123,102 @@ export class JiraService {
   }
 
   // --- 4. Transition to "Dropped" ---
+  // --- 4. Transition to "Dropped" ---
   async updateStatus(issueKey: string) {
     try {
       const transitionId = process.env.JIRA_DROPPED_TRANSITION_ID;
-      if (!transitionId) {
-        throw new Error('JIRA_DROPPED_TRANSITION_ID not configured');
+      const statusName = process.env.JIRA_DROPPED_STATUS_NAME;
+      
+      if (!transitionId && !statusName) {
+        throw new Error('JIRA_DROPPED_TRANSITION_ID or JIRA_DROPPED_STATUS_NAME must be configured');
       }
 
-      this.logger.log(`Transitioning ${issueKey} to Dropped (transition ID: ${transitionId})`);
-
-      await firstValueFrom(
-        this.httpService.post(`/rest/api/3/issue/${issueKey}/transitions`, {
-          transition: { id: transitionId },
-        })
+      // Always fetch available transitions first to verify what's possible
+      this.logger.log(`Fetching available transitions for ${issueKey}`);
+      const { data: transitionsData } = await firstValueFrom(
+        this.httpService.get(`/rest/api/3/issue/${issueKey}/transitions`)
       );
 
-      this.logger.log(`Jira issue ${issueKey} transitioned to Dropped`);
+      let targetTransition: any = null;
+
+      if (transitionId) {
+        // Verify the transition ID is available for this issue
+        targetTransition = transitionsData.transitions.find(
+          (t: any) => t.id === transitionId
+        );
+        
+        if (!targetTransition) {
+          const availableTransitions = transitionsData.transitions.map((t: any) => 
+            `ID: ${t.id}, Name: ${t.name}, To: ${t.to?.name || 'N/A'}`
+          ).join('; ');
+          throw new Error(
+            `Transition ID ${transitionId} is not available for issue ${issueKey}. ` +
+            `Current status may not allow this transition. Available transitions: ${availableTransitions}`
+          );
+        }
+        
+        this.logger.log(`Transitioning ${issueKey} to Dropped (transition ID: ${transitionId}, name: ${targetTransition.name})`);
+      } else {
+        // Find transition by status name
+        this.logger.log(`Finding transition to status: ${statusName}`);
+        
+        targetTransition = transitionsData.transitions.find(
+          (t: any) => t.to?.name === statusName || t.name === statusName
+        );
+        
+        if (!targetTransition) {
+          const availableTransitions = transitionsData.transitions.map((t: any) => 
+            `ID: ${t.id}, Name: ${t.name}, To: ${t.to?.name || 'N/A'}`
+          ).join('; ');
+          throw new Error(
+            `No transition found to status "${statusName}" for issue ${issueKey}. ` +
+            `Available transitions: ${availableTransitions}`
+          );
+        }
+        
+        this.logger.log(`Transitioning ${issueKey} to Dropped (transition ID: ${targetTransition.id}, name: ${targetTransition.name})`);
+      }
+
+      // Build transition payload
+      const transitionPayload: any = {
+        transition: { id: targetTransition.id },
+      };
+
+      // Check if transition requires fields (e.g., resolution, comment)
+      // Some transitions may require a resolution field
+      if (targetTransition.fields) {
+        const requiredFields: any = {};
+        
+        // Check if resolution is required
+        if (targetTransition.fields.resolution && targetTransition.fields.resolution.required) {
+          // Try to find a "Dropped" or "Cancelled" resolution, or use the first available
+          const resolutions = targetTransition.fields.resolution.allowedValues || [];
+          const droppedResolution = resolutions.find((r: any) => 
+            r.name?.toLowerCase().includes('drop') || 
+            r.name?.toLowerCase().includes('cancel') ||
+            r.name?.toLowerCase().includes('close')
+          ) || resolutions[0];
+          
+          if (droppedResolution) {
+            requiredFields.resolution = { id: droppedResolution.id };
+            this.logger.log(`Adding required resolution: ${droppedResolution.name}`);
+          }
+        }
+
+        if (Object.keys(requiredFields).length > 0) {
+          transitionPayload.fields = requiredFields;
+        }
+      }
+
+      // Execute the transition
+      await firstValueFrom(
+        this.httpService.post(`/rest/api/3/issue/${issueKey}/transitions`, transitionPayload)
+      );
+
+      this.logger.log(`Jira issue ${issueKey} transitioned to Dropped successfully`);
     } catch (error) {
-      this.logger.error(` Transition Failed: ${this.getErrorMessage(error)}`);
+      const errorMsg = this.getErrorMessage(error);
+      this.logger.error(`Transition Failed for ${issueKey}: ${errorMsg}`);
       throw error;
     }
   }
