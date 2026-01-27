@@ -1,11 +1,10 @@
-// src/products/products.service.ts
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Product } from './entities/product.entity';
 import { JiraService } from '../jira/jira.service';
-import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
+import { CreateProductDto } from './dto/create-product.dto';
 
 @Injectable()
 export class ProductsService {
@@ -17,31 +16,11 @@ export class ProductsService {
   ) { }
 
   // 1. Create Product -> Create Jira Ticket
-  async createProduct(name: string, description?: string, externalRef?: string) {
+  async createProduct(dto: CreateProductDto) {
+    const { name, description, externalRef } = dto
     const product = await this.repo.save({ name, description, externalRef, jiraSyncStatus: 'PENDING' });
-
-    try {
-      const jiraResult = await this.jira.createIssue({
-        summary: product.name,
-        description: product.description,
-        productId: product.id
-      });
-
-      Object.assign(product, {
-        jiraIssueKey: jiraResult.jiraKey,
-        jiraIssueId: jiraResult.jiraId,
-        jiraSyncStatus: 'OK',
-        jiraLastSyncAt: new Date(),
-      });
-
-      const savedProduct = await this.repo.save(product);
-      return this.filterProductResponse(savedProduct);
-    } catch (e) {
-      this.logger.error(`Failed to create Jira issue for product ${product.id}: ${e.message}`);
-      Object.assign(product, { jiraSyncStatus: 'FAILED' });
-      const savedProduct = await this.repo.save(product);
-      return this.filterProductResponse(savedProduct);
-    }
+    await this.createJiraIssueForProduct(product);
+    return this.filterProductResponse(product);
   }
 
   // 2. Update Product -> Update Jira Ticket
@@ -73,26 +52,8 @@ export class ProductsService {
       }
     } else {
       // Create Jira issue if missing
-      try {
-        const jiraResult = await this.jira.createIssue({
-          summary: product.name,
-          description: product.description,
-          productId: product.id
-        });
-        Object.assign(product, {
-          jiraIssueKey: jiraResult.jiraKey,
-          jiraIssueId: jiraResult.jiraId,
-          jiraSyncStatus: 'OK',
-          jiraLastSyncAt: new Date(),
-        });
-        await this.repo.save(product);
-      } catch (e) {
-        this.logger.error(`Failed to create Jira issue for product ${product.id}: ${e.message}`);
-        Object.assign(product, { jiraSyncStatus: 'FAILED' });
-        await this.repo.save(product);
-      }
+      await this.createJiraIssueForProduct(product);
     }
-
     return this.filterProductResponse(product);
   }
 
@@ -119,55 +80,55 @@ export class ProductsService {
     const issue = payload.issue || payload; // Support both nested and flat payloads
     const issueKey = issue?.key;
     const fields = issue?.fields || {};
-    
+
     if (!issueKey) {
       this.logger.error(`[WEBHOOK] Received payload without Issue Key`);
       return { received: true };
     }
-  
+
     // 2. Find Product
     const product = await this.repo.findOneBy({ jiraIssueKey: issueKey });
     if (!product) {
       this.logger.warn(`[WEBHOOK]  Issue: ${issueKey} | Error: Product not found`);
-      return { received: true }; 
+      return { received: true };
     }
-  
+
     // 3. Mapping Updates (Minimal & Traceable)
     const updates: Partial<Product> = {};
     const changelog: string[] = [];
-  
+
     // Sync Name/Summary
     if (fields.summary && fields.summary !== product.name) {
       changelog.push(`Name: ${product.name} -> ${fields.summary}`);
       updates.name = fields.summary;
     }
-  
+
     // Sync Status
     const newStatus = fields.status?.name;
     if (newStatus && newStatus !== product.ticketStatus) {
       changelog.push(`Status: ${product.ticketStatus || 'N/A'} -> ${newStatus}`);
       updates.ticketStatus = newStatus;
     }
-  
-    // Sync Description (v2 supports string directly)
+
+    // Sync Description 
     if (fields.description && fields.description !== product.description) {
       changelog.push(`Description updated (${fields.description.length} chars)`);
       updates.description = fields.description;
     }
-  
+
     // 4. Traceability Logging & Save
     if (changelog.length > 0) {
       Object.assign(product, updates);
       product.jiraLastSyncAt = new Date();
       product.jiraSyncStatus = 'OK';
-      
+      this.logger.log(`[WEBHOOK]  Issue: ${issueKey} | Product ID: ${product.id}  | Changes: ${changelog}`);
+
       await this.repo.save(product);
 
-      this.logger.log(`[WEBHOOK]  Issue: ${issueKey} | Product ID: ${product.id}`);
     } else {
       this.logger.log(`[WEBHOOK]  Issue: ${issueKey} | No changes detected.`);
     }
-  
+
     return { received: true };
   }
 
@@ -205,6 +166,29 @@ export class ProductsService {
     };
   }
 
+  // --- Helper: Create Jira Issue for Product ---
+  private async createJiraIssueForProduct(product: Product): Promise<void> {
+    try {
+      const jiraResult = await this.jira.createIssue({
+        summary: product.name,
+        description: product.description,
+        productId: product.id
+      });
+
+      Object.assign(product, {
+        jiraIssueKey: jiraResult.jiraKey,
+        jiraIssueId: jiraResult.jiraId,
+        jiraSyncStatus: 'OK',
+        jiraLastSyncAt: new Date(),
+      });
+
+      await this.repo.save(product);
+    } catch (e) {
+      this.logger.error(`Failed to create Jira issue for product ${product.id}: ${e.message}`);
+      Object.assign(product, { jiraSyncStatus: 'FAILED' });
+      await this.repo.save(product);
+    }
+  }
   // ---  for Create/Update---
   private filterProductResponse(product: Product) {
     return {
@@ -217,7 +201,7 @@ export class ProductsService {
     };
   }
 
-   // ---  for get---
+  // ---  for get---
   private filterProductWithTicket(product: Product, ticket: any, jiraFetchStatus?: string, jiraFetchError?: string) {
     const base = {
       id: product.id,

@@ -11,16 +11,15 @@ export class JiraController {
     private readonly productsService: ProductsService
   ) { }
   @Post('webhook')
-async handleWebhook(@Body() data: any) {
-  // 1. Simple Extraction
-  const issueKey = data.issue?.key;              // "PROJ-66"
-  const issueName = data.issue?.fields?.summary;  // "my Product 1"
-  const issueStatus = data.issue?.fields?.status?.name;
+  async handleWebhook(@Body() data: any) {
+    // //  Extraction
+    // const issueKey = data.issue?.key;
+    // const issueName = data.issue?.fields?.summary;
+    // const issueStatus = data.issue?.fields?.status?.name;
 
-  // 2. Simple Traceability Logs
-  console.log(`[Jira Webhook] Key: ${issueKey} | Name: ${issueName} | Status: ${issueStatus}`);
+    // // Traceability Logs
+    // console.log(`[Jira Webhook] Key: ${issueKey} | Name: ${issueName} | Status: ${issueStatus}`);
 
-  // 3. Pass to Service
-  return this.productsService.handleJiraWebhook(data);
-}
+    return this.productsService.handleJiraWebhook(data);
+  }
 }

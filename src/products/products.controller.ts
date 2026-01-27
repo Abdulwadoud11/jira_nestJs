@@ -9,8 +9,7 @@ export class ProductsController {
 
   @Post()
   createProduct(@Body() createProductDto: CreateProductDto) {
-    const { name, description, externalRef } = createProductDto;
-    return this.productsService.createProduct(name, description, externalRef);
+    return this.productsService.createProduct(createProductDto);
   }
 
   @Patch(':id')

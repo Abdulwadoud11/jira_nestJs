@@ -12,7 +12,7 @@ import {
 
 @Entity('products')
 export class Product {
-    @PrimaryGeneratedColumn()
+    @PrimaryGeneratedColumn("increment")
     id: number;
 
     @Column()

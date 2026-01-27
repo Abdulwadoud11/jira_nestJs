@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
-import { firstValueFrom } from 'rxjs';
+import { firstValueFrom, of, throwError } from 'rxjs';
 
 @Injectable()
 export class JiraService {
@@ -9,11 +9,11 @@ export class JiraService {
   constructor(private readonly httpService: HttpService) {
     const email = process.env.JIRA_EMAIL;
     const token = process.env.JIRA_API_TOKEN;
-    
+
     if (!email || !token) {
       throw new Error('JIRA_EMAIL and JIRA_API_TOKEN must be configured');
     }
-    
+
     this.httpService.axiosRef.defaults.baseURL = process.env.JIRA_BASE_URL;
     this.httpService.axiosRef.defaults.auth = {
       username: email as string,
@@ -21,12 +21,25 @@ export class JiraService {
     };
   }
 
-  // --- 1. Create Issue (REST API v2) ---
   async createIssue(dto: { summary: string; description?: string; productId?: number }) {
     try {
-      const description = dto.description 
-        ? `${dto.description}\n\nProduct ID: ${dto.productId || 'N/A'}`
-        : `Product ID: ${dto.productId || 'N/A'}`;
+      const description =
+      {
+        type: "doc",
+        version: 1,
+        content: [
+          {
+            type: "paragraph",
+            content: [{
+              type: "text",
+              text: dto.description
+                ? `${dto.description}\n\nProduct ID: ${dto.productId || 'N/A'}`
+                : `Product ID: ${dto.productId || 'N/A'}`
+            }]
+          }
+        ]
+      };
+
 
       const payload = {
         fields: {
@@ -37,16 +50,17 @@ export class JiraService {
         },
       };
 
-      this.logger.log(`[OUTBOUND] Creating Jira issue: ${dto.summary}`);
-      
+      this.logger.log(` Creating Jira issue: ${dto.summary}`);
+
       const { data } = await firstValueFrom(
-        this.httpService.post('/rest/api/2/issue', payload)
+        this.httpService.post('/rest/api/3/issue', payload)
       );
 
-      this.logger.log(`[OUTBOUND] Jira issue created: ${data.key} (ID: ${data.id})`);
+
+      this.logger.log(` Jira issue created: ${data.key} (ID: ${data.id})`);
       return { jiraKey: data.key, jiraId: data.id };
     } catch (error) {
-      this.logger.error(`[OUTBOUND] Create Issue Failed: ${this.getErrorMessage(error)}`);
+      this.logger.error(` Create Issue Failed: ${this.getErrorMessage(error)}`);
       throw error;
     }
   }
@@ -56,32 +70,44 @@ export class JiraService {
     try {
       const fields: any = {};
       if (dto.summary) fields.summary = dto.summary;
-      if (dto.description) fields.description = dto.description;
+      if (dto.description) fields.description = {
+        type: "doc",
+        version: 1,
+        content: [
+          {
+            type: "paragraph",
+            content: [{
+              type: "text",
+              text: dto.description
+            }]
+          }
+        ]
+      };;
 
-      this.logger.log(`[OUTBOUND] Updating Jira issue ${dto.issueKey}`);
-      
+      this.logger.log(` Updating Jira issue ${dto.issueKey}`);
+
       await firstValueFrom(
-        this.httpService.put(`/rest/api/2/issue/${dto.issueKey}`, { fields })
+        this.httpService.put(`/rest/api/3/issue/${dto.issueKey}`, { fields })
       );
 
-      this.logger.log(`[OUTBOUND] Jira issue ${dto.issueKey} updated successfully`);
+      this.logger.log(` Jira issue ${dto.issueKey} updated successfully`);
     } catch (error) {
-      this.logger.error(`[OUTBOUND] Update Issue Failed: ${this.getErrorMessage(error)}`);
+      this.logger.error(` Update Issue Failed: ${this.getErrorMessage(error)}`);
       throw error;
     }
   }
 
-  // --- 3. Get Issue (for live status) ---
+  // --- 3. Get Issue  ---
   async getIssue(issueKey: string) {
     try {
-      this.logger.log(`[OUTBOUND] Fetching Jira issue ${issueKey}`);
-      
+      this.logger.log(` Fetching Jira issue ${issueKey}`);
+
       const { data } = await firstValueFrom(
-        this.httpService.get(`/rest/api/2/issue/${issueKey}?fields=status,summary,description,updated,assignee`)
+        this.httpService.get(`/rest/api/3/issue/${issueKey}?fields=status,summary,description,updated,assignee`)
       );
 
-      this.logger.log(`[OUTBOUND] Jira issue ${issueKey} fetched: ${data.fields.status.name}`);
-      
+      this.logger.log(` Jira issue ${issueKey} fetched: ${data.fields.status.name}`);
+
       return {
         key: data.key,
         status: data.fields.status.name,
@@ -91,7 +117,7 @@ export class JiraService {
         assignee: data.fields.assignee?.displayName || null,
       };
     } catch (error) {
-      this.logger.error(`[OUTBOUND] Get Issue Failed: ${this.getErrorMessage(error)}`);
+      this.logger.error(` Get Issue Failed: ${this.getErrorMessage(error)}`);
       throw error;
     }
   }
@@ -104,25 +130,25 @@ export class JiraService {
         throw new Error('JIRA_DROPPED_TRANSITION_ID not configured');
       }
 
-      this.logger.log(`[OUTBOUND] Transitioning ${issueKey} to Dropped (transition ID: ${transitionId})`);
-      
+      this.logger.log(`Transitioning ${issueKey} to Dropped (transition ID: ${transitionId})`);
+
       await firstValueFrom(
-        this.httpService.post(`/rest/api/2/issue/${issueKey}/transitions`, {
+        this.httpService.post(`/rest/api/3/issue/${issueKey}/transitions`, {
           transition: { id: transitionId },
         })
       );
 
-      this.logger.log(`[OUTBOUND] Jira issue ${issueKey} transitioned to Dropped`);
+      this.logger.log(`Jira issue ${issueKey} transitioned to Dropped`);
     } catch (error) {
-      this.logger.error(`[OUTBOUND] Transition Failed: ${this.getErrorMessage(error)}`);
+      this.logger.error(` Transition Failed: ${this.getErrorMessage(error)}`);
       throw error;
     }
   }
 
   // --- Helper: Extract Error Message ---
   private getErrorMessage(error: any): string {
-    return error.response?.data?.errorMessages?.[0] 
-      || JSON.stringify(error.response?.data?.errors) 
+    return error.response?.data?.errorMessages?.[0]
+      || JSON.stringify(error.response?.data?.errors)
       || error.message;
   }
 }
