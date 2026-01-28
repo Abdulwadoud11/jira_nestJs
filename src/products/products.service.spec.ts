@@ -16,6 +16,7 @@ describe('ProductsService', () => {
     create: jest.fn(), // <-- add this
     save: jest.fn(),
     findOneBy: jest.fn(),
+    findOne: jest.fn(),
     softDelete: jest.fn(),
   });
 
@@ -209,7 +210,7 @@ describe('ProductsService', () => {
         externalRef: 'EXT-1',
       } as Product;
 
-      repo.findOneBy.mockResolvedValue(product);
+      repo.findOne.mockResolvedValue(product);
 
       const result = await service.findProduct(1);
 
@@ -232,7 +233,7 @@ describe('ProductsService', () => {
         externalRef: 'EXT-1',
       } as Product;
 
-      repo.findOneBy.mockResolvedValue(product);
+      repo.findOne.mockResolvedValue(product);
       const jiraData = {
         key: 'PROJ-1',
         status: 'Open',
@@ -262,7 +263,7 @@ describe('ProductsService', () => {
         externalRef: 'EXT-1',
       } as Product;
 
-      repo.findOneBy.mockResolvedValue(product);
+      repo.findOne.mockResolvedValue(product);
       jira.getIssue.mockRejectedValue(new Error('Jira down'));
 
       const result = await service.findProduct(1);

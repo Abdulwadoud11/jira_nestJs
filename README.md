@@ -23,6 +23,9 @@ npm install
 
 # Run application
 npm run start:dev
+
+# Run Tests
+npm test
 ```
 
 ## Environment Configuration
