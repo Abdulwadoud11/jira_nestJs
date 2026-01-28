@@ -22,6 +22,7 @@ describe('JiraService', () => {
         process.env.JIRA_PROJECT_KEY = 'TEST';
         process.env.JIRA_ISSUE_TYPE = 'Task';
         process.env.JIRA_DROPPED_TRANSITION_ID = '5';
+        process.env.JIRA_DROPPED_STATUS_NAME = "Dropped"
 
         const module: TestingModule = await Test.createTestingModule({
             providers: [
@@ -236,44 +237,117 @@ describe('JiraService', () => {
     /////////////////////////////////////////////////////
 
     describe('updateStatus', () => {
-        it('should transition Jira issue successfully', async () => {
+
+        beforeEach(() => {
+            jest.resetAllMocks();
+            delete process.env.JIRA_DROPPED_TRANSITION_ID;
+            delete process.env.JIRA_DROPPED_STATUS_NAME;
+        });
+
+        it('should transition Jira issue successfully using transition ID', async () => {
             process.env.JIRA_DROPPED_TRANSITION_ID = '123';
-            httpService.post = jest.fn().mockReturnValue(of({ data: {} }));
+
+            httpService.get = jest.fn().mockReturnValue(
+                of({
+                    data: {
+                        transitions: [
+                            { id: '123', name: 'Drop Issue', to: { name: 'Dropped' } }
+                        ]
+                    }
+                })
+            );
+
+            httpService.post = jest.fn().mockReturnValue(of({}));
+
             const logSpy = jest.spyOn(service['logger'], 'log').mockImplementation();
 
             await service.updateStatus('PROJ-1');
+
+            expect(httpService.get).toHaveBeenCalledWith(
+                '/rest/api/3/issue/PROJ-1/transitions'
+            );
 
             expect(httpService.post).toHaveBeenCalledWith(
                 '/rest/api/3/issue/PROJ-1/transitions',
                 { transition: { id: '123' } }
             );
+
             expect(logSpy).toHaveBeenCalledWith(
-                'Transitioning PROJ-1 to Dropped (transition ID: 123)'
+                'Fetching available transitions for PROJ-1'
             );
-            expect(logSpy).toHaveBeenCalledWith('Jira issue PROJ-1 transitioned to Dropped');
+
+            expect(logSpy).toHaveBeenCalledWith(
+                expect.stringContaining('Transitioning PROJ-1 to Dropped')
+            );
+
+            expect(logSpy).toHaveBeenCalledWith(
+                'Jira issue PROJ-1 transitioned to Dropped successfully'
+            );
 
             logSpy.mockRestore();
         });
 
-        it('should throw if transition ID is missing', async () => {
-            delete process.env.JIRA_DROPPED_TRANSITION_ID;
-
+        it('should throw if neither transition ID nor status name is configured', async () => {
             await expect(service.updateStatus('PROJ-2'))
-                .rejects.toThrow('JIRA_DROPPED_TRANSITION_ID not configured');
+                .rejects
+                .toThrow(
+                    'JIRA_DROPPED_TRANSITION_ID or JIRA_DROPPED_STATUS_NAME must be configured'
+                );
         });
 
-        it('should log and throw if httpService.post fails', async () => {
-            process.env.JIRA_DROPPED_TRANSITION_ID = '123';
-            const error = new Error('Jira down');
-            httpService.post = jest.fn().mockReturnValue(throwError(() => error));
-            const errorSpy = jest.spyOn(service['logger'], 'error').mockImplementation();
+        it('should throw if configured transition ID is not available', async () => {
+            process.env.JIRA_DROPPED_TRANSITION_ID = '999';
 
-            await expect(service.updateStatus('PROJ-3')).rejects.toThrow('Jira down');
-            expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('Transition Failed'));
+            httpService.get = jest.fn().mockReturnValue(
+                of({
+                    data: {
+                        transitions: [
+                            { id: '123', name: 'Close Issue', to: { name: 'Closed' } }
+                        ]
+                    }
+                })
+            );
+
+            await expect(service.updateStatus('PROJ-3'))
+                .rejects
+                .toThrow('Transition ID 999 is not available for issue PROJ-3');
+        });
+
+        it('should log and rethrow if Jira transition POST fails', async () => {
+            process.env.JIRA_DROPPED_TRANSITION_ID = '123';
+
+            httpService.get = jest.fn().mockReturnValue(
+                of({
+                    data: {
+                        transitions: [
+                            { id: '123', name: 'Drop Issue', to: { name: 'Dropped' } }
+                        ]
+                    }
+                })
+            );
+
+            const error = new Error('Jira down');
+            httpService.post = jest.fn().mockReturnValue(
+                throwError(() => error)
+            );
+
+            const errorSpy = jest
+                .spyOn(service['logger'], 'error')
+                .mockImplementation();
+
+            await expect(service.updateStatus('PROJ-4'))
+                .rejects
+                .toThrow('Jira down');
+
+            expect(errorSpy).toHaveBeenCalledWith(
+                expect.stringContaining('Transition Failed for PROJ-4')
+            );
 
             errorSpy.mockRestore();
         });
+
     });
+
 
 
 });

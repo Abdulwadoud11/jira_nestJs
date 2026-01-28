@@ -12,12 +12,12 @@ export class JiraController {
     private readonly jiraService: JiraService,
     private readonly productsService: ProductsService
   ) { }
-  
+
   @Post('webhook')
   async handleWebhook(@Body() data: any) {
     // Log raw payload for POC traceability
-    this.logger.log(`[WEBHOOK] Received payload: ${JSON.stringify(data)}`);
-    
+    // this.logger.log(`[WEBHOOK] Received payload: ${JSON.stringify(data)}`);
+
     return this.productsService.handleJiraWebhook(data);
   }
 }

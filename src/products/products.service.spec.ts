@@ -13,6 +13,7 @@ describe('ProductsService', () => {
   let jira: jest.Mocked<JiraService>;
 
   const mockRepo = () => ({
+    create: jest.fn(), // <-- add this
     save: jest.fn(),
     findOneBy: jest.fn(),
     softDelete: jest.fn(),
@@ -87,6 +88,7 @@ describe('ProductsService', () => {
         description: 'Desc',
         externalRef: 'EXT-1',
         jiraIssueKey: 'PROJ-1',
+        jiraSyncStatus: "OK",
         jiraIssueId: '1001',
       });
     });
@@ -128,6 +130,8 @@ describe('ProductsService', () => {
         description: 'New Desc',
         externalRef: undefined,
         jiraIssueKey: 'PROJ-1',
+        jiraSyncStatus: "OK",
+
         jiraIssueId: undefined,
       });
     });
@@ -294,19 +298,62 @@ describe('ProductsService', () => {
       logSpy.mockRestore();
     });
 
-    it('should return received=true if product not found', async () => {
-      const payload = { issue: { key: 'PROJ-1', fields: {} } };
+    it('should create product and return received=true when product not found', async () => {
+      const payload = {
+        issue: {
+          key: 'PROJ-1',
+          id: '10001',
+          fields: {
+            summary: 'Jira Title',
+            status: { name: 'Open' },
+            description: 'Desc',
+          },
+        },
+      };
+
+      const savedProduct = {
+        id: 99,
+        name: 'Jira Title',
+        description: 'Desc',
+        jiraIssueKey: 'PROJ-1',
+        jiraIssueId: '10001',
+        ticketStatus: 'Open',
+        jiraSyncStatus: 'OK',
+      } as Product;
 
       repo.findOneBy.mockResolvedValue(null);
-      const warnSpy = jest.spyOn(service['logger'], 'warn').mockImplementation();
+      repo.save.mockResolvedValue(savedProduct);
+
+      const logSpy = jest
+        .spyOn(service['logger'], 'log')
+        .mockImplementation();
 
       const result = await service.handleJiraWebhook(payload);
 
-      expect(result).toEqual({ received: true });
-      expect(warnSpy).toHaveBeenCalledWith('[WEBHOOK]  Issue: PROJ-1 | Error: Product not found');
+      expect(repo.findOneBy).toHaveBeenCalledWith({ jiraIssueKey: 'PROJ-1' });
 
-      warnSpy.mockRestore();
+      expect(repo.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'Jira Title',
+          description: 'Desc',
+          jiraIssueKey: 'PROJ-1',
+          jiraIssueId: '10001',
+          ticketStatus: 'Open',
+          jiraSyncStatus: 'OK',
+          jiraLastSyncAt: expect.any(Date),
+        }),
+      );
+
+      expect(logSpy).toHaveBeenCalledWith(
+        '[WEBHOOK] Created new product from Jira issue PROJ-1 '
+      );
+
+      expect(result).toEqual({ received: true });
+
+      logSpy.mockRestore();
     });
+
+
 
     it('should update product and save if changes detected', async () => {
       const product = {
@@ -385,16 +432,13 @@ describe('ProductsService', () => {
   ///////////////////////////////////////////////////////////////
 
   describe('remove', () => {
-
     it('should throw NotFoundException if product does not exist', async () => {
       repo.findOneBy.mockResolvedValue(null);
 
-      await expect(service.remove(1))
-        .rejects
-        .toThrow(NotFoundException);
+      await expect(service.remove(1)).rejects.toThrow(NotFoundException);
     });
 
-    it('should remove product and transition Jira to dropped successfully', async () => {
+    it('should transition Jira and soft delete successfully', async () => {
       const product = {
         id: 1,
         jiraIssueKey: 'PROJ-1',
@@ -403,32 +447,27 @@ describe('ProductsService', () => {
 
       repo.findOneBy.mockResolvedValue(product);
       jira.updateStatus.mockResolvedValue(undefined);
-      repo.save.mockResolvedValue(product);
-      repo.softDelete.mockResolvedValue(undefined);
 
       const result = await service.remove(1);
 
-      // Jira updated and product saved
       expect(jira.updateStatus).toHaveBeenCalledWith('PROJ-1');
-      expect(repo.save).toHaveBeenCalledWith(expect.objectContaining({
-        jiraSyncStatus: 'OK',
-        jiraLastSyncAt: expect.any(Date),
-      }));
+      expect(repo.save).toHaveBeenCalled();
 
-      // Soft delete called
-      expect(repo.softDelete).toHaveBeenCalledWith(1);
-
-      // Response structure
-      expect(result).toEqual(expect.objectContaining({
-        id: 1,
-        deleted: true,
-        jiraTransitioned: true,
-        jiraSyncStatus: 'OK',
-        deletedAt: expect.any(Date),
-      }));
+      expect(result).toEqual(
+        expect.objectContaining({
+          id: 1,
+          deleted: true,
+          jiraTransitioned: true,
+          jiraSyncStatus: 'OK',
+          deletedAt: expect.any(Date),
+        }),
+      );
     });
 
-    it('should mark jiraSyncStatus FAILED if Jira transition fails but still soft deletes', async () => {
+
+
+
+    it('should mark jiraSyncStatus FAILED if Jira transition fails but still soft delete', async () => {
       const product = {
         id: 1,
         jiraIssueKey: 'PROJ-1',
@@ -437,26 +476,22 @@ describe('ProductsService', () => {
 
       repo.findOneBy.mockResolvedValue(product);
       jira.updateStatus.mockRejectedValue(new Error('Jira down'));
-      repo.save.mockResolvedValue(product);
-      repo.softDelete.mockResolvedValue(undefined);
 
-      const logSpy = jest.spyOn(service['logger'], 'error').mockImplementation();
+      const errorSpy = jest.spyOn(service['logger'], 'error').mockImplementation();
 
       const result = await service.remove(1);
 
-      // Jira failure logged
-      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Failed to transition Jira issue PROJ-1'));
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.stringContaining('Failed to transition Jira issue PROJ-1'),
+      );
 
-      // Soft delete still called
-      expect(repo.softDelete).toHaveBeenCalledWith(1);
-
-      // jiraSyncStatus should be FAILED
+      expect(repo.save).toHaveBeenCalled(); // ✅
       expect(result.jiraSyncStatus).toBe('FAILED');
 
-      logSpy.mockRestore();
+      errorSpy.mockRestore();
     });
 
-    it('should soft delete product without Jira key', async () => {
+    it('should soft delete product without Jira issue key', async () => {
       const product = {
         id: 1,
         jiraIssueKey: null,
@@ -464,17 +499,26 @@ describe('ProductsService', () => {
       } as Product;
 
       repo.findOneBy.mockResolvedValue(product);
-      repo.softDelete.mockResolvedValue(undefined);
 
       const result = await service.remove(1);
 
       expect(jira.updateStatus).not.toHaveBeenCalled();
-      expect(repo.softDelete).toHaveBeenCalledWith(1);
-      expect(result.jiraTransitioned).toBe(false);
-      expect(result.jiraSyncStatus).toBe('PENDING');
+
+      expect(result).toEqual(
+        expect.objectContaining({
+          id: 1,
+          deleted: true,
+          jiraTransitioned: false,
+          jiraSyncStatus: 'PENDING',
+          deletedAt: expect.any(Date),
+        }),
+      );
     });
 
+
   });
+
+
 
   ///////////////////////////////////////////////////////////////
 

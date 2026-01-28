@@ -121,6 +121,10 @@ export class JiraService {
       throw error;
     }
   }
+<<<<<<< Updated upstream
+=======
+
+>>>>>>> Stashed changes
   // --- 4. Transition to "Dropped" ---
   async updateStatus(issueKey: string) {
     try {
@@ -143,8 +147,12 @@ export class JiraService {
         // Verify the transition ID is available for this issue
         // Convert both to string for comparison (env vars are strings, Jira may return numbers)
         targetTransition = transitionsData.transitions.find(
+<<<<<<< Updated upstream
           (t: any) => String(t.id) === String(transitionId)
         );
+=======
+          (t: any) => String(t.id) === String(transitionId));
+>>>>>>> Stashed changes
 
         if (!targetTransition) {
           const availableTransitions = transitionsData.transitions.map((t: any) =>

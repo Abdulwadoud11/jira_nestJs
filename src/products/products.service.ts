@@ -59,9 +59,9 @@ export class ProductsService {
 
   // 3. Get Product + Current State
   async findProduct(id: number) {
-    const product = await this.repo.findOne({ 
+    const product = await this.repo.findOne({
       where: { id },
-      withDeleted: false 
+      withDeleted: false
     });
     if (!product) throw new NotFoundException(`Product ${id} not found`);
 
@@ -78,7 +78,7 @@ export class ProductsService {
     }
   }
 
- async handleJiraWebhook(payload: any) {
+  async handleJiraWebhook(payload: any) {
     // 1. Traceability: Basic ID and Event discovery
     const issue = payload.issue || payload; // Support both nested and flat payloads
     const issueKey = issue?.key;
@@ -91,11 +91,8 @@ export class ProductsService {
     }
 
     // 2. Find Product
-    let product = await this.repo.findOne({ 
-      where: { jiraIssueKey: issueKey },
-      withDeleted: false 
-    });
-    
+    let product = await this.repo.findOneBy({ jiraIssueKey: issueKey });
+
     // 2a. If product doesn't exist, create it from Jira issue data
     if (!product) {
       // Extract description text (handle both string and ADF format)
@@ -120,7 +117,7 @@ export class ProductsService {
         jiraLastSyncAt: new Date(),
       });
 
-      this.logger.log(`[WEBHOOK] Created new product from Jira issue ${issueKey} | Product ID: ${product.id}`);
+      this.logger.log(`[WEBHOOK] Created new product from Jira issue ${issueKey} `);
     }
 
     // 3. Mapping Updates (Minimal & Traceable)
@@ -171,10 +168,10 @@ export class ProductsService {
     return { received: true };
   }
 
-    // Helper: Extract text from Atlassian Document Format
+  // Helper: Extract text from Atlassian Document Format
   private extractTextFromADF(adf: any): string {
     if (!adf || !adf.content) return '';
-    
+
     const extractText = (node: any): string => {
       if (node.type === 'text') {
         return node.text || '';
@@ -187,7 +184,7 @@ export class ProductsService {
 
     return adf.content.map(extractText).join('\n').trim();
   }
- // 5. Soft Delete -> Move Jira to "Dropped"
+  // 5. Soft Delete -> Move Jira to "Dropped"
   async remove(id: number) {
     const product = await this.repo.findOneBy({ id });
     if (!product) throw new NotFoundException(`Product ${id} not found`);
@@ -206,6 +203,8 @@ export class ProductsService {
         // Continue with soft delete even if Jira transition fails
       }
     }
+
+
 
     // Soft delete by setting deletedAt directly on the entity
     product.deletedAt = new Date();
@@ -252,7 +251,7 @@ export class ProductsService {
       externalRef: product.externalRef,
       jiraIssueKey: product.jiraIssueKey,
       jiraIssueId: product.jiraIssueId,
-       jiraSyncStatus: product.jiraSyncStatus,
+      jiraSyncStatus: product.jiraSyncStatus,
     };
   }
 
@@ -268,7 +267,7 @@ export class ProductsService {
         status: ticket.status,
         updated: ticket.updated,
         summary: ticket.summary,
-         assignee: ticket.assignee,
+        assignee: ticket.assignee,
       } : null,
     };
 
