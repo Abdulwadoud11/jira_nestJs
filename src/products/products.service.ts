@@ -19,7 +19,16 @@ export class ProductsService {
   async createProduct(dto: CreateProductDto) {
     const { name, description, externalRef } = dto
     const product = await this.repo.save({ name, description, externalRef, jiraSyncStatus: 'PENDING' });
+
+
+
+    const start = Date.now();
+
     await this.createJiraIssueForProduct(product);
+
+    this.logger.log(
+      `[PERF] product=${product.id} jira_orchestration=${(Date.now() - start) / 1000}ms`,
+    );
     return this.filterProductResponse(product);
   }
 
@@ -91,34 +100,13 @@ export class ProductsService {
     }
 
     // 2. Find Product
-    let product = await this.repo.findOneBy({ jiraIssueKey: issueKey });
 
-    // 2a. If product doesn't exist, create it from Jira issue data
-    if (!product) {
-      // Extract description text (handle both string and ADF format)
-      let descriptionText = '';
-      if (fields.description) {
-        if (typeof fields.description === 'string') {
-          descriptionText = fields.description;
-        } else if (fields.description.type === 'doc' && fields.description.content) {
-          // Extract text from ADF format
-          descriptionText = this.extractTextFromADF(fields.description);
-        }
-      }
+    const product: any = await this.repo.findOne({
+      where: { jiraIssueKey: issueKey },
+      withDeleted: true, // include soft-deleted rows
+    });
+    if (!product) throw new NotFoundException(`Product not found`);
 
-      // Create new product from Jira issue
-      product = await this.repo.save({
-        name: fields.summary || `Jira Issue ${issueKey}`,
-        description: descriptionText,
-        jiraIssueKey: issueKey,
-        jiraIssueId: issue?.id?.toString() || null,
-        ticketStatus: fields.status?.name || null,
-        jiraSyncStatus: 'OK',
-        jiraLastSyncAt: new Date(),
-      });
-
-      this.logger.log(`[WEBHOOK] Created new product from Jira issue ${issueKey} `);
-    }
 
     // 3. Mapping Updates (Minimal & Traceable)
     const updates: Partial<Product> = {};
